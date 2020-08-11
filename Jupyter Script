@@ -1,0 +1,287 @@
+###########################
+# Author: Sarah Richard
+# Case code: Python initiative
+# Description: Owl crunching 
+# Last modified 8/10/2020
+###########################
+
+import pandas as pd
+import numpy as np
+import copy
+from datetime import datetime
+
+#helper functions
+def answer_value_counts(data,qid):
+    by_col=data.columns[qid]
+    answerfreq=data.groupby(by_col)['Weight'].sum().sort_index().reset_index()
+    answerfreq.rename(columns={by_col:'Answer'},inplace=True)
+    answerfreq=answerfreq.merge(answerkey.loc[answerkey['Variable ID']==by_col,
+                 ['Answer Code','Answer Label']],left_on='Answer',
+                right_on='Answer Code',how='right').sort_values(by='Answer Code')
+    answerfreq=answerfreq.iloc[:,[2,3,1]]
+    answerfreq.rename(columns={answerfreq.columns[2]:'Counts'},inplace=True)
+    answerfreq.fillna(0,inplace=True)
+    total_N=pd.DataFrame({'Answer Code':['Total N'],'Counts':[data.loc[~data.iloc[:,qid].isna(),'Weight'].sum()]})
+    answerfreq=answerfreq.append(total_N,sort=False,ignore_index=True)
+    return answerfreq
+
+def answer_rank_counts(data,qid):
+    by_col=data.columns[qid]
+    answerfreq=data.groupby(by_col)['Weight'].sum().sort_index().reset_index()
+    answerfreq.rename(columns={by_col:'Answer'},inplace=True)
+    rank_key=pd.DataFrame({'Answer Code':[1,2,3],'Answer Label':['1st','2nd','3rd']})
+    answerfreq=answerfreq.merge(rank_key,left_on='Answer',
+                    right_on='Answer Code',how='right').sort_values(by='Answer Code')
+    answerfreq=answerfreq.iloc[:,[2,3,1]]
+    answerfreq.rename(columns={answerfreq.columns[2]:'Counts'},inplace=True)
+    answerfreq.fillna(0,inplace=True)
+    total_N=pd.DataFrame({'Answer Code':['Total N'],'Counts':["Check N separately"]})
+    answerfreq=answerfreq.append(total_N,sort=False,ignore_index=True)
+    return answerfreq
+
+def answer_numericlist_counts(data,qid):
+    data=data[~data[data.columns[qid]].isna()]
+    if data.shape[0]>0:
+        weighted_col=data.iloc[:,qid]*data['Weight']
+        col_sort_by_value=data.loc[:,[data.columns[qid],'Weight']].sort_values(by=data.columns[qid])
+        avg=weighted_col.sum()/data['Weight'].sum()
+        col_sort_by_value['cumsum']=col_sort_by_value.Weight.cumsum()
+        median_rank=col_sort_by_value['cumsum'].iloc[-1]/2
+        median_rank_floor=np.floor(median_rank)
+        median_rank_ceil=np.ceil(median_rank)
+        col_sort_by_value['lower_than_median_floor']=col_sort_by_value['cumsum']<median_rank_floor
+        col_sort_by_value['lower_than_median_ceil']=col_sort_by_value['cumsum']<median_rank_ceil
+        median1=col_sort_by_value.loc[~col_sort_by_value['lower_than_median_floor'],data.columns[qid]].head(1).values[0]
+        median2=col_sort_by_value.loc[~col_sort_by_value['lower_than_median_ceil'],data.columns[qid]].head(1).values[0]
+        if median1==median2:
+            median=median1
+        else:
+            median=median1+(median2-median1)/(median_rank_ceil-median_rank_floor)*(median_rank-median_rank_floor)
+        col_sort_by_value['std']=np.power(col_sort_by_value[data.columns[qid]]-avg,2)*col_sort_by_value['Weight']
+        std=np.sqrt(col_sort_by_value['std'].sum()/col_sort_by_value['Weight'].sum())
+        total_count=data.loc[~data.iloc[:,qid].isna(),'Weight'].sum()
+    else:
+        avg='NA'
+        median='NA'
+        std='NA'
+        total_count=0
+    answerfreq=pd.DataFrame({'Answer Code':[1,2,3],'Answer Label':['Mean','Median','std'],
+                            'Counts':[avg,median,std]})
+    total_N=pd.DataFrame({'Answer Code':['Total N'],'Counts':[total_count]})
+    answerfreq=answerfreq.append(total_N,sort=False,ignore_index=True)
+    return answerfreq
+            
+
+time=datetime.now().strftime("Date_%m-%d_Time_%H-%M") 
+
+# <font color='red'>Input and output file names</font>
+
+survey_raw_data_file='Data\owl_example_survey_raw_data.xlsx'
+datamap='Data\owl_example_datamap.xlsx'
+output_file='Analysis\Survey analysis_'+time+'.xlsx'
+
+# Load data and clean up format
+
+survey=pd.read_excel(survey_raw_data_file,sheet_name=0)
+
+questions=survey.columns.str.split(' : ').str[1].to_list()
+
+survey.rename(columns=lambda x:x.split(' : ')[0],inplace=True)
+answerkey=pd.read_excel(datamap)
+
+
+# slight format change to datamap
+answerkey.loc[answerkey['Type']=='multi','Answer Code']=1
+answerkey.loc[answerkey['Variable ID'].str.find('99')>0,'Answer Code']=99
+answerkey.loc[(answerkey['Variable ID'].str.find('98')>0)&(answerkey['Type']=='opentext'),'Answer Code']=98
+qid_list=answerkey['Variable ID'].unique()
+
+### Loop through each question and count answers
+
+df=pd.DataFrame({'Question ID':[''],'Question':[''],'Answer Code':[''],'Answer Label':[''],'Counts_all_completes':['']})
+df2=pd.DataFrame({'Question ID':[''],'Question':[''],'Answer Code':[''],'Answer Label':['']})
+
+
+## <font color='red'>Define first question, vendor questions, and survey cuts here</font>
+
+# DEFINE WEIGHTS HERE:
+# Default weighting: 1
+survey['Weight']=1 
+# If you need to change weights from 1 to other values for a particular segment, define below
+# EXAMPLE: 
+# survey.loc[survey['hidHospital']==1,'Weight']=2
+
+# ENTER FIRST QUESTION NUMBER HERE:
+startid=np.where(qid_list=='QX')[0][0]
+
+# DEFINE COMPLETES HERE:
+# Default cut: all completes
+survey_complete=survey.loc[survey['hidStatus']=='COMPLETE',:]
+# If you need to view incomplete responses, define below
+# EXAMPLE:
+survey_complete=survey.loc[survey['hidStatus']=='INCOMPLETE_MAIN',:]
+
+# ENTER SINGLE LOOP QUESTION #s HERE:
+# If there are no single loop questions, write "loop_q=[]"
+loop_q=['QXX','QYY']
+# Specify the indices and corresponding names of the looped items (i.e., vendors, brands, drugs)
+# Note - ensure that the last looped option does NOT have a comma after
+# EXAMPLE: 
+# loop_dict={
+#     1:'Vendor A',
+#     2:'Vendor B',
+#     3:'Vendor C',
+#     4:'Vendor D',
+#     5:'Vendor E',
+#     6:'Vendor F',
+#     7:'Vendor G',
+#     8:'Vendor H',
+#     9:'Vendor I',
+#     10:'Vendor J',
+#     11:'Fake vendor',
+#     98:'Other'
+# }
+
+# DEFINE ADDITIONAL CUTS HERE:
+# data_dict={  
+#     'cut 1':survey_complete[survey_complete['var 1']==1],
+#     'critical_access':survey_complete[survey_complete['hidHospital']==2],
+#     'other_hospital_type':survey_complete[survey_complete['hidHospital']==3]
+
+# }
+
+if len(loop_q)>0:
+    loop_q_number=pd.Series()
+    for loopq in loop_q:
+        loop_q_number=loop_q_number.append(pd.Series(pd.Series(qid_list)[pd.Series(qid_list).str.contains(loopq+"_")]))
+    loop_q_number=loop_q_number.reset_index(drop=True)
+    loop_q_number=pd.DataFrame(loop_q_number)
+    loop_q_number[['Survey Question','index']]=pd.DataFrame(loop_q_number[0].str.rsplit('_',n=1).tolist())
+    loop_q_number.rename(columns={0:'Question ID'},inplace=True)
+    loop_list=pd.DataFrame.from_dict(loop_dict,orient='index',columns=['name']).reset_index()
+    loop_list['index']=loop_list['index'].astype('str')
+    loop_q_number=loop_q_number.merge(loop_list,on='index',how='left').rename(columns={0:'name'})
+    loop_q_number=loop_q_number[loop_q_number['index']!='other']
+    loop_q_number=loop_q_number[~loop_q_number['Survey Question'].str.contains('other')]
+    loop_q_number.dropna(inplace=True)
+
+# loop_q_number
+
+for q in qid_list[startid:]:
+    qid=survey_complete.columns.get_loc(q)
+    if (len(loop_q)==0) or (q not in loop_q_number["Question ID"].values):
+        df=df.append(pd.DataFrame({'Question ID':[survey_complete.columns[qid]],'Question':[questions[qid]],'Answer Code':[''],'Answer Label':[''],'Counts_all_completes':['']}),sort=False,ignore_index=True)
+
+        if not(set(answerkey.loc[answerkey['Variable ID']==q, 'Type']) & set(['numericlist','ranking'])): 
+
+            answer=answer_value_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes'},inplace=True)
+            for data in data_dict.keys():
+                cut=answer_value_counts(data_dict[data],qid)
+                newname='Counts_'+data
+                answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df=pd.concat([df,answer],axis=0,sort=False)
+
+        if answerkey.loc[answerkey['Variable ID']==q, 'Type'].values[0]=='ranking':
+
+            answer=answer_rank_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes'},inplace=True)
+            for data in data_dict.keys():
+                cut=answer_rank_counts(data_dict[data],qid)
+                newname='Counts_'+data
+                answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df=pd.concat([df,answer],axis=0,sort=False)
+
+        if answerkey.loc[answerkey['Variable ID']==q, 'Type'].values[0]=='numericlist':
+
+            answer=answer_numericlist_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes'},inplace=True)
+            for data in data_dict.keys():
+                cut=answer_numericlist_counts(data_dict[data],qid)
+                newname='Counts_'+data
+                answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df=pd.concat([df,answer],axis=0,sort=False)
+
+
+if len(loop_q)>0:
+    for q in loop_q_number['Survey Question'].unique():
+        q_label=loop_q_number.loc[loop_q_number['Survey Question']==q,'Question ID'].reset_index(drop=True)
+        qid=survey_complete.columns.get_loc(q_label[0])
+        df2=df2.append(pd.DataFrame({'Question ID':[q],'Question':[questions[qid]],'Answer Code':[''],'Answer Label':['']}),sort=False,ignore_index=True)
+        name=loop_q_number.loc[loop_q_number['Question ID']==q_label[0],'name'].values[0]
+        if not(set(answerkey.loc[answerkey['Variable ID']==q_label[0], 'Type']) & set(['numericlist','ranking'])): 
+            answer=answer_value_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes_'+name},inplace=True)
+            for ql in q_label[1:]:
+                qid=survey_complete.columns.get_loc(ql)
+                name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                cut=answer_value_counts(survey_complete,qid)
+                newname='Counts_all_completes_'+name
+                answer[newname]=cut['Counts']
+            for data in data_dict.keys():
+                for ql in q_label:
+                    qid=survey_complete.columns.get_loc(ql)
+                    name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                    cut=answer_value_counts(data_dict[data],qid)
+                    newname='Counts_'+data+'_'+name
+                    answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df2=pd.concat([df2,answer],axis=0,sort=False)
+
+        if answerkey.loc[answerkey['Variable ID']==q_label[0], 'Type'].values[0]=='ranking':
+            answer=answer_rank_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes_'+name},inplace=True)
+            for ql in q_label[1:]:
+                qid=survey_complete.columns.get_loc(ql)
+                name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                cut=answer_rank_counts(survey_complete,qid)
+                newname='Counts_all_completes_'+name
+                answer[newname]=cut['Counts']
+            for data in data_dict.keys():
+                for ql in q_label:
+                    qid=survey_complete.columns.get_loc(ql)
+                    name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                    cut=answer_rank_counts(data_dict[data],qid)
+                    newname='Counts_'+data+'_'+name
+                    answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df2=pd.concat([df2,answer],axis=0,sort=False)
+
+        if answerkey.loc[answerkey['Variable ID']==q_label[0], 'Type'].values[0]=='numericlist':
+            answer=answer_numericlist_counts(survey_complete,qid)
+            answer.rename(columns={'Counts':'Counts_all_completes_'+name},inplace=True)
+            for ql in q_label[1:]:
+                qid=survey_complete.columns.get_loc(ql)
+                name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                cut=answer_numericlist_counts(survey_complete,qid)
+                newname='Counts_all_completes_'+name
+                answer[newname]=cut['Counts']
+            for data in data_dict.keys():
+                for ql in q_label:
+                    qid=survey_complete.columns.get_loc(ql)
+                    name=loop_q_number.loc[loop_q_number['Question ID']==ql,'name'].values[0]
+                    cut=answer_numericlist_counts(data_dict[data],qid)
+                    newname='Counts_'+data+'_'+name
+                    answer[newname]=cut['Counts']
+            answer.reset_index(drop=True,inplace=True)
+            df2=pd.concat([df2,answer],axis=0,sort=False)
+
+
+
+
+
+
+writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
+
+# Write each dataframe to a different worksheet.
+df.to_excel(writer,sheet_name='Python output - nonloop',index=False)
+df2.to_excel(writer,sheet_name='Python output - loop',index=False)
+
+# Close the Pandas Excel writer and output the Excel file.
+writer.save()
+
+
+
